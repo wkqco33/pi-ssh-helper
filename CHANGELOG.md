@@ -10,7 +10,7 @@ All notable changes are documented here. The format follows
 
 ### Fixed
 
-- 첫 공개 릴리스가 `0.1.0`에서 `0.1.1`로 넘어갔습니다. `0.1.0`은 npm의 웹 2FA 흐름에서 **staged** 상태로 만들어졌고 공개 버전으로 승격되지 않아 같은 버전으로 다시 배포할 수 없었습니다(`E409 Cannot publish over previously staged version`). 코드는 동일하며 `0.1.1`이 최초로 공개되는 버전입니다.
+- `0.1.0`은 npm 웹 2FA 흐름을 거쳐 공개되었지만 **provenance가 없습니다**(staged로 만들어진 뒤 같은 버전으로 CI 재배포가 `E409 Cannot publish over previously staged version`으로 막혔습니다). 코드 변경 없이 버전만 올린 `0.1.1`이 **CI(OIDC)에서 provenance와 함께 배포된 첫 버전**이며 `latest`입니다. 새로 설치할 때는 `0.1.1` 이상을 쓰세요.
 
 ## [0.1.0] - 2026-10-22
 
