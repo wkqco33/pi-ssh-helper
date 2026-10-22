@@ -148,6 +148,6 @@ npm run check         # test + typecheck + format:check + pack-check
 
 ## 상태
 
-- `0.1.0` — 최초 배포 전. 위 "최초 배포" 절차 후 `latest`가 됩니다.
+- `0.1.x`는 npm `pi-ssh-helper`로 배포됩니다. 릴리스는 태그 push → CI(OIDC + provenance) 경로로만 수행합니다. `latest` 버전은 `npm view pi-ssh-helper version`으로 확인하세요.
 - TypeScript 소스를 그대로 실행합니다(빌드 단계 없음). pi 확장 생태계가 TS를 직접 로드하기 때문입니다.
 - `pi-helper-core`의 transport seam을 소비하는 첫 패키지입니다.
