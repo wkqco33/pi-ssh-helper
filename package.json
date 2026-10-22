@@ -1,6 +1,6 @@
 {
   "name": "pi-ssh-helper",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Run pi helper commands and diagnostics on a remote host over SSH, and route ROS/Python/Rust helper tools to it through the pi-helper-core transport seam",
   "type": "module",
   "keywords": [
