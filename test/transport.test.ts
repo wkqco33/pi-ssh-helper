@@ -54,17 +54,46 @@ test('the probe uses the same prelude as real commands, so it measures the same 
   const bare = buildProfile('a', { remoteWorkspace: '/w' }, []);
   assert.equal(remoteProbeCommand(bare, 'printf hi'), 'printf hi');
 
+  // A prelude that exists on every host: this test runs on CI too, where a
+  // machine-specific setup path would make it pass only locally.
   const withPrelude = buildProfile(
     'b',
-    { remoteWorkspace: '/w', prelude: ['source /opt/ros/jazzy/setup.bash'] },
+    { remoteWorkspace: '/w', prelude: ['export PI_PROBE_PRELUDE=ok'] },
     [],
   );
-  const command = remoteProbeCommand(withPrelude, 'printf hi');
+  const command = remoteProbeCommand(withPrelude, 'printf "%s" "$PI_PROBE_PRELUDE"');
   assert.match(command, /^bash -lc '/);
-  assert.match(command, /source \/opt\/ros\/jazzy\/setup\.bash/);
-  assert.match(command, /printf hi/);
-  // One more shell layer must still reach the same probe.
-  assert.equal(execFileSync('sh', ['-c', command], { encoding: 'utf8' }), 'hi');
+  assert.match(command, /PI_PROBE_PRELUDE/);
+  // One more shell layer, as ssh applies, must still reach the same probe.
+  assert.equal(execFileSync('sh', ['-c', command], { encoding: 'utf8' }), 'ok');
+});
+
+test('a prelude line with quotes and spaces stays inside one shell argument', () => {
+  const profile = buildProfile(
+    'c',
+    { remoteWorkspace: '/w', prelude: ['source "/opt/my ros/setup.bash"'] },
+    [],
+  );
+  assert.equal(
+    remoteProbeCommand(profile, 'printf hi'),
+    `bash -lc 'source "/opt/my ros/setup.bash" && printf hi'`,
+  );
+
+  // An apostrophe in a prelude must be escaped for the outer shell layer
+  // instead of closing it and turning the rest into a command.
+  const apostrophe = buildProfile(
+    'd',
+    { remoteWorkspace: '/w', prelude: ["export LABEL='two words'"] },
+    [],
+  );
+  const command = remoteProbeCommand(apostrophe, 'printf hi');
+  assert.ok(command.includes(`'\\''`), command);
+  assert.equal(
+    execFileSync('sh', ['-c', `${command.replace('printf hi', 'printf "%s" "$LABEL"')}`], {
+      encoding: 'utf8',
+    }),
+    'two words',
+  );
 });
 
 test('the working directory is mapped and an unmappable one is refused', () => {
