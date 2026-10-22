@@ -1,0 +1,70 @@
+{
+  "name": "pi-ssh-helper",
+  "version": "0.1.0",
+  "description": "Run pi helper commands and diagnostics on a remote host over SSH, and route ROS/Python/Rust helper tools to it through the pi-helper-core transport seam",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "ssh",
+    "remote",
+    "development"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wkqco33/pi-ssh-helper.git"
+  },
+  "bugs": {
+    "url": "https://github.com/wkqco33/pi-ssh-helper/issues"
+  },
+  "homepage": "https://github.com/wkqco33/pi-ssh-helper#readme",
+  "files": [
+    "extensions",
+    "src",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "SECURITY.md"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "test:coverage": "tsx --test --experimental-test-coverage test/*.test.ts",
+    "format": "prettier --write \"extensions/**/*.ts\" \"src/**/*.ts\" \"test/**/*.ts\"",
+    "format:check": "prettier --check \"extensions/**/*.ts\" \"src/**/*.ts\" \"test/**/*.ts\"",
+    "pack-check": "node scripts/verify-pack.mjs",
+    "check": "npm test && npm run typecheck && npm run format:check && npm run pack-check"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "typebox": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@types/node": "^26.6.2",
+    "prettier": "^3.9.8",
+    "tsx": "^4.23.13",
+    "typebox": "^1.4.2",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "pi-helper-core": "^0.1.3"
+  }
+}

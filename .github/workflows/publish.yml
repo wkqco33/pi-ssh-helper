@@ -1,0 +1,45 @@
+name: Publish npm package
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish to npm with provenance
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      # Trusted Publishing needs a recent npm; the runner's bundled one is older.
+      # `registry-url` is deliberately not set: it writes an `_authToken` line
+      # that expands to empty and silently downgrades the OIDC exchange to a
+      # normal (unauthenticated) publish.
+      - name: Upgrade npm for Trusted Publishing
+        run: npm install --global npm@latest
+      - name: Show runtime versions
+        run: node --version && npm --version
+      - name: Verify version matches tag
+        shell: bash
+        run: |
+          version="v$(node -p "require('./package.json').version")"
+          if [[ "$version" != "${GITHUB_REF_NAME}" ]]; then
+            echo "package.json version $version does not match release tag ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+      - name: Install dependencies
+        run: npm ci
+      - name: Verify release
+        run: npm run check
+      - name: Publish with npm Trusted Publishing
+        run: npm publish --provenance --access public
