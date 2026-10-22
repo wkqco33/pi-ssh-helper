@@ -36,6 +36,18 @@ export interface HostOverrides {
   /** Allows `mutating`/`irreversible` commands. Defaults to false. */
   allowMutating?: boolean;
   connectTimeoutSeconds?: number;
+  /**
+   * Docker container the project actually runs in, e.g. a robot gateway
+   * container. When set, helper commands and probes execute inside it instead
+   * of on the host, because that is where the toolchain exists.
+   */
+  container?: string;
+  /**
+   * Path inside the container that `localWorkspace` maps onto, e.g. `/ws`.
+   * Required when `container` is set: guessing a mount point would run tools in
+   * a directory that has nothing to do with the project.
+   */
+  containerWorkdir?: string;
 }
 
 export interface RemoteProfile {
@@ -50,6 +62,8 @@ export interface RemoteProfile {
   prelude: string[];
   allowMutating: boolean;
   connectTimeoutSeconds: number;
+  container?: string;
+  containerWorkdir?: string;
 }
 
 const MAX_PORT = 65_535;
@@ -167,6 +181,25 @@ export function buildProfile(
     throw new Error(`host ${alias}: prelude must be a list of non-empty shell lines`);
   }
 
+  const container = overrides?.container;
+  if (container !== undefined) {
+    // Docker accepts a leading alphanumeric, then word characters, dots, or
+    // dashes. Anything else would be read as a flag or a path.
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(container)) {
+      throw new Error(`host ${alias}: invalid container name ${JSON.stringify(container)}`);
+    }
+    if (overrides?.containerWorkdir === undefined) {
+      throw new Error(
+        `host ${alias}: containerWorkdir is required when container is set, because the helper refuses to guess where the project is mounted inside ${container}`,
+      );
+    }
+  } else if (overrides?.containerWorkdir !== undefined) {
+    throw new Error(`host ${alias}: containerWorkdir is set but container is not`);
+  }
+  if (overrides?.containerWorkdir !== undefined && !overrides.containerWorkdir.startsWith('/')) {
+    throw new Error(`host ${alias}: containerWorkdir must be an absolute path`);
+  }
+
   const connectTimeoutSeconds = overrides?.connectTimeoutSeconds ?? DEFAULT_CONNECT_TIMEOUT_SECONDS;
   if (!Number.isInteger(connectTimeoutSeconds) || connectTimeoutSeconds < 1) {
     throw new Error(`host ${alias}: connectTimeoutSeconds must be a positive integer`);
@@ -184,6 +217,8 @@ export function buildProfile(
     prelude: [...prelude],
     allowMutating: overrides?.allowMutating ?? false,
     connectTimeoutSeconds,
+    container,
+    containerWorkdir: overrides?.containerWorkdir,
   };
 }
 

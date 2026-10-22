@@ -6,6 +6,19 @@ All notable changes are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-22
+
+### Added
+
+- `container` / `containerWorkdir` profile fields: on hosts whose toolchain lives in a container (a robot ROS gateway, for example), helper commands and capability probes now run through `docker exec -w <workdir> <container> bash -lc <script>` instead of on the host. Without this, `/ssh-remote on <robot>` routed ROS tools to a host that has no ROS at all.
+- `ssh_exec` takes an optional `container` argument and defaults to the host, so `docker ps` and `systemctl` stay one call away while `ros2 node list` can target the gateway container.
+- With a container, local paths map to `containerWorkdir` rather than the host checkout, and an unmappable path still fails closed.
+- `test/version.test.ts`: `TOOL_VERSION` must equal `package.json` version, so the response envelope cannot claim a version the package is not.
+
+### Fixed
+
+- The capability probe now runs in the same environment as the commands (container and prelude included). It previously measured the host shell, which reported "ros2 CLI is missing" for a robot whose ROS only exists inside a container.
+
 ## [0.1.1] - 2026-10-22
 
 ### Fixed

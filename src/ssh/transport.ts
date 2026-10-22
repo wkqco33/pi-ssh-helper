@@ -15,7 +15,8 @@ import {
   type CapabilityReport,
   type Capabilities,
 } from './capability.ts';
-import { buildRemoteCommand } from './command.ts';
+import { buildRemoteCommand, buildRemoteScript, wrapContainer } from './command.ts';
+import type { ContainerContext } from './command.ts';
 import { defaultControlDirPath } from './config.ts';
 import { toRemotePath } from './map.ts';
 import { shQuote } from './quote.ts';
@@ -33,6 +34,23 @@ export interface SshTransportOptions {
 
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const CONTROL_PERSIST_SECONDS = 600;
+
+/** The container a profile runs in, or `undefined` when it runs on the host. */
+export function containerOf(profile: RemoteProfile): ContainerContext | undefined {
+  if (profile.container === undefined) return undefined;
+  // Validated when the profile was built; the default is unreachable.
+  return { name: profile.container, workdir: profile.containerWorkdir ?? '/' };
+}
+
+/**
+ * The path a local directory maps to.
+ *
+ * With a container the toolchain lives at the mount point, so helper tools must
+ * be pointed there rather than at the host checkout.
+ */
+export function remoteRootOf(profile: RemoteProfile): string {
+  return profile.containerWorkdir ?? profile.remoteWorkspace;
+}
 
 export function buildSshArgs(
   profile: RemoteProfile,
@@ -86,15 +104,29 @@ export function createSshTransport(options: SshTransportOptions): CommandTranspo
 
   return {
     id: `ssh:${profile.alias}`,
-    mapCwd: (cwd) => toRemotePath(cwd, { localRoot, remoteRoot: profile.remoteWorkspace }),
+    mapCwd: (cwd) => toRemotePath(cwd, { localRoot, remoteRoot: remoteRootOf(profile) }),
     async exec(spec: CommandSpec): Promise<RunResult> {
-      const command = buildRemoteCommand({
-        cwd: spec.cwd,
-        prelude: profile.prelude,
-        env: forwardableEnv(spec.env),
-        executable: spec.executable,
-        args: spec.args,
-      });
+      const container = containerOf(profile);
+      const command = container
+        ? wrapContainer(
+            buildRemoteScript({
+              // `docker exec -w` sets the directory, so no inner `cd` is needed.
+              cwd: '',
+              prelude: profile.prelude,
+              env: forwardableEnv(spec.env),
+              executable: spec.executable,
+              args: spec.args,
+            }),
+            spec.cwd,
+            container,
+          )
+        : buildRemoteCommand({
+            cwd: spec.cwd,
+            prelude: profile.prelude,
+            env: forwardableEnv(spec.env),
+            executable: spec.executable,
+            args: spec.args,
+          });
       await ensureControlDir();
       return runLocalCommand('ssh', buildSshArgs(profile, command, controlDir), {
         // The ssh client itself needs a local directory; it has nothing to do
@@ -127,8 +159,13 @@ export interface InspectionOutcome extends ProbeOutcome {
  */
 export function remoteProbeCommand(profile: RemoteProfile, script: string): string {
   const prelude = profile.prelude.map((line) => line.trim()).filter((line) => line !== '');
-  if (prelude.length === 0) return script;
-  return `bash -lc ${shQuote([...prelude, script].join(' && '))}`;
+  const body = prelude.length === 0 ? script : [...prelude, script].join(' && ');
+  const container = containerOf(profile);
+  if (container !== undefined) {
+    // The probe has to measure the same environment the commands will run in.
+    return wrapContainer(body, container.workdir, container);
+  }
+  return prelude.length === 0 ? script : `bash -lc ${shQuote(body)}`;
 }
 
 /** Cheap reachability + capability probe, safe to call before deciding anything. */

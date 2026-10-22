@@ -123,3 +123,54 @@ test('invalid connection values are refused with the host named', () => {
     /connectTimeoutSeconds/,
   );
 });
+
+test('a container profile carries its mount point', () => {
+  const profile = buildProfile(
+    'robot',
+    { remoteWorkspace: '/home/robot/ws', container: 'cloi-robo-claw', containerWorkdir: '/ws' },
+    [],
+  );
+  assert.equal(profile.container, 'cloi-robo-claw');
+  assert.equal(profile.containerWorkdir, '/ws');
+});
+
+test('a container without a mount point is refused rather than guessed', () => {
+  assert.throws(
+    () => buildProfile('robot', { remoteWorkspace: '/home/robot/ws', container: 'box' }, []),
+    /containerWorkdir is required when container is set/,
+  );
+});
+
+test('container values are validated before they reach docker', () => {
+  assert.throws(
+    () =>
+      buildProfile(
+        'robot',
+        { remoteWorkspace: '/w', container: '-w', containerWorkdir: '/ws' },
+        [],
+      ),
+    /invalid container name/,
+  );
+  assert.throws(
+    () =>
+      buildProfile(
+        'robot',
+        { remoteWorkspace: '/w', container: 'a b', containerWorkdir: '/ws' },
+        [],
+      ),
+    /invalid container name/,
+  );
+  assert.throws(
+    () => buildProfile('robot', { remoteWorkspace: '/w', containerWorkdir: '/ws' }, []),
+    /containerWorkdir is set but container is not/,
+  );
+  assert.throws(
+    () =>
+      buildProfile(
+        'robot',
+        { remoteWorkspace: '/w', container: 'box', containerWorkdir: 'ws' },
+        [],
+      ),
+    /containerWorkdir must be an absolute path/,
+  );
+});

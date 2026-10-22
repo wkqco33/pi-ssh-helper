@@ -93,6 +93,40 @@ pi install ./pi-ssh-helper          # 이 저장소를 클론한 디렉터리에
 - **출력 상한** — stdout/stderr는 100KB에서 잘리고, 모델에게는 16KB까지만 전달합니다.
 - **타임아웃은 로컬** — 로컬 타이머가 ssh 클라이언트 프로세스 그룹을 종료합니다. 원격에 GNU `timeout`이 없어도 동작합니다. 원격 프로세스가 남을 수 있는 것은 알려진 한계입니다.
 
+## 컨테이너 안에서 실행 (로봇 등)
+
+도구체인이 호스트가 아니라 컨테이너에서 도는 장비(예: CLOi 로봇)는 `container`와 `containerWorkdir`를 지정합니다. 그러면 헬퍼 명령과 probe가 `docker exec`로 컨테이너 안에서 실행됩니다.
+
+```json
+{
+  "hosts": {
+    "robot-01": {
+      "hostname": "10.0.0.5",
+      "user": "robot",
+      "remoteWorkspace": "/home/robot/ws",
+      "localWorkspace": "/home/me/ws",
+      "container": "cloi-robo-claw",
+      "containerWorkdir": "/ws",
+      "prelude": ["source /opt/ros/jazzy/setup.bash", "source /ws/install/setup.bash"]
+    }
+  }
+}
+```
+
+- 로컬 cwd는 `containerWorkdir`로 매핑됩니다(호스트 체크아웃 경로가 아니라 컨테이너 마운트 지점). 매핑 불가면 fail-closed.
+- `prelude`는 **컨테이너 안에서** 실행됩니다.
+- `containerWorkdir`는 필수입니다. 마운트 지점을 추측하면 엉뚱한 디렉터리에서 도구가 돌기 때문입니다.
+- `ssh_exec`는 기본이 **호스트**이고, 컨테이너에서 실행하려면 `container` 인자를 넘깁니다. 이때 `cwd`를 생략하면 `containerWorkdir`이 기본값이 됩니다.
+
+```jsonc
+// 호스트 진단
+{ "host": "robot-01", "command": "docker ps --format '{{.Names}}'" }
+// 컨테이너 안 ROS 진단
+{ "host": "robot-01", "command": "ros2 node list --no-daemon", "container": "cloi-robo-claw" }
+```
+
+> `ssh_exec`의 `command`는 로컬 셸에서 한 번 평가된 뒤 원격으로 전달됩니다. `$(...)`를 컨테이너 안에서 확장하려면 **작은따옴표**로 감싸세요.
+
 ## 지원 범위
 
 | 항목 | 지원 |
@@ -102,6 +136,7 @@ pi install ./pi-ssh-helper          # 이 저장소를 클론한 디렉터리에
 | 원격 OS | POSIX 셸 + `bash`가 있는 Linux/macOS. Windows 원격은 미지원 |
 | 인증 | SSH 키 / ssh-agent (`BatchMode=yes`) |
 | 의존성 | `pi-helper-core@^0.1.3` (transport seam) |
+| 컨테이너 | Docker(`docker exec`)가 있는 원격 호스트, 선택 사항 |
 
 **0.y.z 단계입니다.** 공개 도구 이름(`ssh_*`, `/ssh-remote`)은 유지하되, 설정 키·출력 `data` 필드·오류 코드는 마이너 릴리스에서 바뀔 수 있습니다. 버전 규칙은 [SemVer](https://semver.org/)를 따르고 변경 내역은 [`CHANGELOG.md`](CHANGELOG.md)에 남깁니다.
 
@@ -109,6 +144,7 @@ pi install ./pi-ssh-helper          # 이 저장소를 클론한 디렉터리에
 
 - 비밀번호/passphrase 대화형 인증 미지원 (키 인증 + ssh-agent 전제)
 - 원격 `Match`/`Include`/`ProxyCommand` 미지원
+- 컨테이너 실행은 `docker exec` 단일 컨테이너 대상입니다(compose 서비스·여러 컨테이너 동시 지정 미지원)
 - DDS 도달성 트리아지(로컬↔원격 graph 비교)와 로그/rosbag 회수는 다음 단계입니다
 - Windows 원격 미지원 (POSIX 경로·셸 전제)
 

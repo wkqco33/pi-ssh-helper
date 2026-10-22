@@ -1,6 +1,7 @@
 import { runLocalCommand, type RunResult } from 'pi-helper-core';
 import { homedir } from 'node:os';
 import { shQuote } from './quote.ts';
+import { wrapContainer, type ContainerContext } from './command.ts';
 import { buildSshArgs } from './transport.ts';
 import type { RemoteProfile } from './profile.ts';
 
@@ -19,6 +20,8 @@ export interface RemoteShellInput {
   maxBytes?: number;
   signal?: AbortSignal;
   controlDir?: string;
+  /** When set, the command runs inside this container instead of on the host. */
+  container?: ContainerContext;
 }
 
 export async function runRemoteShell(
@@ -26,20 +29,23 @@ export async function runRemoteShell(
   controlDir: string,
   input: RemoteShellInput,
 ): Promise<RunResult> {
-  const steps: string[] = [];
-  if (input.cwd !== undefined && input.cwd !== '') {
-    if (!input.cwd.startsWith('/'))
-      throw new Error(`remote cwd must be an absolute path: ${input.cwd}`);
-    steps.push(`cd ${shQuote(input.cwd)}`);
+  if (input.cwd !== undefined && input.cwd !== '' && !input.cwd.startsWith('/')) {
+    throw new Error(`remote cwd must be an absolute path: ${input.cwd}`);
   }
-  for (const line of profile.prelude) {
-    const trimmed = line.trim();
-    if (trimmed !== '') steps.push(trimmed);
-  }
-  steps.push(input.command);
-  const script = steps.join(' && ');
 
-  return runLocalCommand('ssh', buildSshArgs(profile, `bash -lc ${shQuote(script)}`, controlDir), {
+  const prelude = profile.prelude.map((line) => line.trim()).filter((line) => line !== '');
+  let remoteCommand: string;
+  if (input.container !== undefined) {
+    // The prelude belongs to the container too: on a robot the host has no ROS.
+    const body = [...prelude, input.command].join(' && ');
+    remoteCommand = wrapContainer(body, input.cwd ?? input.container.workdir, input.container);
+  } else {
+    const steps = input.cwd === undefined || input.cwd === '' ? [] : [`cd ${shQuote(input.cwd)}`];
+    steps.push(...prelude, input.command);
+    remoteCommand = `bash -lc ${shQuote(steps.join(' && '))}`;
+  }
+
+  return runLocalCommand('ssh', buildSshArgs(profile, remoteCommand, controlDir), {
     cwd: homedir(),
     timeoutMs: input.timeoutMs ?? 120_000,
     maxBytes: input.maxBytes ?? 100 * 1024,

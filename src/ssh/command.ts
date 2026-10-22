@@ -55,3 +55,31 @@ export function buildRemoteScript(input: RemoteCommandInput): string {
 export function buildRemoteCommand(input: RemoteCommandInput): string {
   return `bash -lc ${shQuote(buildRemoteScript(input))}`;
 }
+
+/** A container to run inside, on hosts that keep their toolchain there. */
+export interface ContainerContext {
+  name: string;
+  workdir: string;
+}
+
+/**
+ * Wraps a script so it runs inside `container`, not on the host.
+ *
+ * `docker exec` passes its arguments without a shell, so the script only needs
+ * one layer of quoting: the host shell that ssh starts. `-w` is used instead of
+ * an inner `cd` so the working directory is validated by Docker itself and a
+ * missing mount fails loudly rather than silently landing somewhere else.
+ */
+export function wrapContainer(
+  script: string,
+  cwd: string | undefined,
+  container: ContainerContext,
+): string {
+  const args = ['docker', 'exec'];
+  if (cwd !== undefined && cwd !== '') {
+    if (!cwd.startsWith('/')) throw new Error(`container cwd must be an absolute path: ${cwd}`);
+    args.push('-w', shQuote(cwd));
+  }
+  args.push(shQuote(container.name), 'bash', '-lc', shQuote(script));
+  return args.join(' ');
+}

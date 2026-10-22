@@ -5,6 +5,7 @@ import { loadHostCatalog, profileFor } from '../hosts.ts';
 import { defaultControlDirPath } from '../ssh/config.ts';
 import type { RemoteProfile } from '../ssh/profile.ts';
 import { runRemoteShell } from '../ssh/shell.ts';
+import type { ContainerContext } from '../ssh/command.ts';
 import { HOST_PARAM, clip, failed, result, sshFailureMessage, text } from './common.ts';
 
 export function registerExecTool(pi: ExtensionAPI): void {
@@ -29,6 +30,12 @@ export function registerExecTool(pi: ExtensionAPI): void {
         Type.Boolean({
           description:
             'Acknowledge that this command changes remote state. Still requires allowMutating for the host in config.',
+        }),
+      ),
+      container: Type.Optional(
+        Type.String({
+          description:
+            'Run inside this Docker container instead of on the host. Use it when the toolchain lives in a container, e.g. a robot ROS gateway. The default cwd becomes the host containerWorkdir.',
         }),
       ),
     }),
@@ -71,6 +78,22 @@ export function registerExecTool(pi: ExtensionAPI): void {
         );
       }
 
+      let container: ContainerContext | undefined;
+      if (params.container !== undefined) {
+        if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(params.container)) {
+          return failed(
+            ctx.cwd,
+            started,
+            `invalid container name ${JSON.stringify(params.container)}`,
+            'SSH_INVALID_CONTAINER',
+          );
+        }
+        container = {
+          name: params.container,
+          workdir: profile.containerWorkdir ?? profile.remoteWorkspace,
+        };
+      }
+
       const timeoutSeconds = params.timeoutSeconds ?? 120;
       if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) {
         return failed(
@@ -81,11 +104,13 @@ export function registerExecTool(pi: ExtensionAPI): void {
         );
       }
 
+      const effectiveCwd = params.cwd ?? container?.workdir ?? profile.remoteWorkspace;
       const run = await runRemoteShell(profile, defaultControlDirPath(), {
         command: params.command,
-        cwd: params.cwd ?? profile.remoteWorkspace,
+        cwd: effectiveCwd,
         timeoutMs: timeoutSeconds * 1000,
         signal,
+        container,
       });
 
       const stdout = clip(run.stdout);
@@ -95,7 +120,8 @@ export function registerExecTool(pi: ExtensionAPI): void {
         alias: profile.alias,
         hostname: profile.hostname,
         command: params.command,
-        cwd: params.cwd ?? profile.remoteWorkspace,
+        cwd: effectiveCwd,
+        container: container?.name ?? null,
         risk: classification.risk,
         exitCode: run.code,
         stdout: stdout.text,
@@ -110,11 +136,14 @@ export function registerExecTool(pi: ExtensionAPI): void {
         result(ctx.cwd, started, {
           ok: succeeded,
           summary: succeeded
-            ? `${profile.alias}: command succeeded (${run.durationMs}ms)`
-            : `${profile.alias}: command failed (${sshFailureMessage(run.stderr, run.code, run.timedOut)})`,
+            ? `${profile.alias}${container === undefined ? '' : ` (container ${container.name})`}: command succeeded (${run.durationMs}ms)`
+            : `${profile.alias}${container === undefined ? '' : ` (container ${container.name})`}: command failed (${sshFailureMessage(run.stderr, run.code, run.timedOut)})`,
           data,
           evidence: [
-            { kind: 'ssh-exec', message: `${profile.alias}: ${params.command}` },
+            {
+              kind: 'ssh-exec',
+              message: `${profile.alias}${container === undefined ? '' : `:${container.name}`}: ${params.command}`,
+            },
             { kind: 'ssh-exit', message: String(run.code) },
           ],
           warnings:

@@ -61,6 +61,8 @@ export function registerHostTools(pi: ExtensionAPI): void {
         port: profile.port,
         proxyJump: profile.proxyJump,
         remoteWorkspace: profile.remoteWorkspace,
+        container: profile.container ?? null,
+        containerWorkdir: profile.containerWorkdir ?? null,
         allowMutating: profile.allowMutating,
         reachable: run.code === 0,
         probeMs: run.durationMs,
@@ -80,7 +82,7 @@ export function registerHostTools(pi: ExtensionAPI): void {
       return text(
         result(ctx.cwd, started, {
           ok: true,
-          summary: `${profile.alias} reachable in ${run.durationMs}ms; ${gaps.length === 0 ? 'no capability gaps' : gaps.length + ' capability gap(s)'}`,
+          summary: `${profile.alias}${profile.container === undefined ? '' : ` (container ${profile.container})`} reachable in ${run.durationMs}ms; ${gaps.length === 0 ? 'no capability gaps' : gaps.length + ' capability gap(s)'}`,
           data,
           evidence: [
             {
@@ -145,7 +147,12 @@ export function registerHostTools(pi: ExtensionAPI): void {
         result(ctx.cwd, started, {
           ok: true,
           summary: `${profile.alias}: ${report.kernel || 'unknown kernel'}; ROS ${report.rosDistros.length > 0 ? report.rosDistros.join(', ') : 'not installed'}`,
-          data: { alias: profile.alias, ...report },
+          data: {
+            alias: profile.alias,
+            container: profile.container ?? null,
+            containerWorkdir: profile.containerWorkdir ?? null,
+            ...report,
+          },
           evidence: [{ kind: 'ssh-host', message: `${profile.alias} → ${profile.hostname}` }],
           warnings: gaps.map((gap) => ({
             code: 'CAPABILITY_GAP',

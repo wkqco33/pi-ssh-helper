@@ -38,6 +38,8 @@ const OVERRIDE_KEYS = new Set([
   'prelude',
   'allowMutating',
   'connectTimeoutSeconds',
+  'container',
+  'containerWorkdir',
 ]);
 
 const TOP_LEVEL_KEYS = new Set(['hosts', 'defaultHost']);
@@ -139,6 +141,8 @@ function validateOverrides(
     'proxyJump',
     'remoteWorkspace',
     'localWorkspace',
+    'container',
+    'containerWorkdir',
   ] as const;
   for (const key of stringKeys) {
     const value = entry[key];

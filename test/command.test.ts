@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildRemoteCommand, buildRemoteScript } from '../src/ssh/command.ts';
+import { buildRemoteCommand, buildRemoteScript, wrapContainer } from '../src/ssh/command.ts';
 
 function runLocally(script: string, cwd: string): string {
   // The same `bash -lc` wrapper the remote side uses, so the quoting under test
@@ -82,4 +82,43 @@ test('a command is executed, not left with the wrapper shell as its parent', () 
   const script = buildRemoteScript({ cwd: '/tmp', executable: 'sh', args: ['-c', 'printf done'] });
   const lines = script.split(' && ');
   assert.equal(lines.at(-1), "exec 'sh' '-c' 'printf done'");
+});
+
+test('a container command sets the working directory with docker exec -w', () => {
+  const wrapped = wrapContainer('printf hi', '/ws', { name: 'cloi-robo-claw', workdir: '/ws' });
+  assert.equal(wrapped, `docker exec -w '/ws' 'cloi-robo-claw' bash -lc 'printf hi'`);
+});
+
+test('a container command without a cwd relies on the configured workdir', () => {
+  const wrapped = wrapContainer('printf hi', undefined, { name: 'box', workdir: '/ws' });
+  assert.equal(wrapped, `docker exec 'box' bash -lc 'printf hi'`);
+});
+
+test('the wrapped command really changes directory and runs inside the container', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-ssh-docker-'));
+  const originalPath = process.env.PATH;
+  try {
+    // A fake `docker` that honours `exec -w DIR NAME cmd...` by changing
+    // directory and running the command, which is what the real client does.
+    const fake = join(dir, 'docker');
+    writeFileSync(
+      fake,
+      '#!/bin/sh\nshift\nif [ "$1" = "-w" ]; then cd "$2" || exit 1; shift 2; fi\nshift\nexec "$@"\n',
+      { mode: 0o755 },
+    );
+    process.env.PATH = `${dir}:${originalPath ?? ''}`;
+
+    const wrapped = wrapContainer('printf "%s" "$PWD"', dir, { name: 'box', workdir: '/' });
+    assert.equal(execFileSync('sh', ['-c', wrapped], { encoding: 'utf8' }), dir);
+  } finally {
+    process.env.PATH = originalPath;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a relative container cwd is rejected instead of being resolved by docker', () => {
+  assert.throws(
+    () => wrapContainer('printf hi', 'ws', { name: 'box', workdir: '/ws' }),
+    /container cwd must be an absolute path/,
+  );
 });

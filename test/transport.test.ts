@@ -144,3 +144,65 @@ test('exec runs ssh locally and sends the mapped cwd inside the remote command',
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+const CONTAINER_PROFILE = buildProfile(
+  'robot',
+  {
+    hostname: '10.0.0.5',
+    user: 'robot',
+    remoteWorkspace: '/home/robot/ws',
+    container: 'cloi-robo-claw',
+    containerWorkdir: '/ws',
+    prelude: ['source /opt/ros/jazzy/setup.bash'],
+  },
+  [],
+);
+
+test('with a container, local paths map to the container mount, not the host checkout', () => {
+  const transport = createSshTransport({ profile: CONTAINER_PROFILE, localRoot: '/home/me/ws' });
+  assert.equal(transport.mapCwd('/home/me/ws'), '/ws');
+  assert.equal(transport.mapCwd('/home/me/ws/src/pkg'), '/ws/src/pkg');
+  assert.throws(() => transport.mapCwd('/home/me/other'), /outside the transport root/);
+});
+
+test('with a container, commands and the probe both run through docker exec', () => {
+  const exec = remoteProbeCommand(CONTAINER_PROFILE, 'printf hi');
+  assert.match(exec, /^docker exec /);
+  assert.match(exec, /-w '\/ws'/);
+  assert.match(exec, /'cloi-robo-claw' bash -lc /);
+  // The prelude is part of the container probe, since the host has no ROS.
+  assert.match(exec, /source \/opt\/ros\/jazzy\/setup\.bash/);
+  assert.match(exec, /printf hi/);
+});
+
+test('a container exec sends docker exec with the mapped cwd to ssh', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'pi-ssh-container-'));
+  const originalPath = process.env.PATH;
+  try {
+    const fake = join(dir, 'ssh');
+    await writeFile(fake, '#!/bin/sh\nfor arg in "$@"; do printf "%s\\n" "$arg"; done\n');
+    await chmod(fake, 0o755);
+    process.env.PATH = `${dir}:${originalPath ?? ''}`;
+
+    const transport = createSshTransport({
+      profile: CONTAINER_PROFILE,
+      localRoot: '/home/me/ws',
+      controlDir: join(dir, 'ctl'),
+    });
+    const result = await transport.exec({
+      executable: 'ros2',
+      args: ['node', 'list'],
+      cwd: '/ws',
+      timeoutMs: 20_000,
+    });
+
+    const remoteCommand = result.stdout.trim().split('\n').at(-1) ?? '';
+    assert.match(remoteCommand, /^docker exec -w '\/ws' 'cloi-robo-claw' bash -lc /);
+    assert.match(remoteCommand, /source \/opt\/ros\/jazzy\/setup\.bash/);
+    assert.match(remoteCommand, /ros2/);
+    assert.doesNotMatch(remoteCommand, /\/home\/me\/ws/);
+  } finally {
+    process.env.PATH = originalPath;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
