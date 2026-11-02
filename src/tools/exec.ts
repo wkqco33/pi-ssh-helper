@@ -8,6 +8,9 @@ import { runRemoteShell } from '../ssh/shell.ts';
 import type { ContainerContext } from '../ssh/command.ts';
 import { HOST_PARAM, clip, failed, result, sshFailureMessage, text } from './common.ts';
 
+/** Upper bound for one tool call, so a model-chosen value cannot park the turn. */
+const MAX_TIMEOUT_SECONDS = 600;
+
 export function registerExecTool(pi: ExtensionAPI): void {
   pi.registerTool({
     name: 'ssh_exec',
@@ -24,7 +27,9 @@ export function registerExecTool(pi: ExtensionAPI): void {
         }),
       ),
       timeoutSeconds: Type.Optional(
-        Type.Number({ description: 'Wall-clock timeout in seconds. Defaults to 120.' }),
+        Type.Number({
+          description: `Wall-clock timeout in seconds. Defaults to 120, capped at ${MAX_TIMEOUT_SECONDS}.`,
+        }),
       ),
       allowMutating: Type.Optional(
         Type.Boolean({
@@ -100,6 +105,16 @@ export function registerExecTool(pi: ExtensionAPI): void {
           ctx.cwd,
           started,
           `timeoutSeconds must be positive (got ${timeoutSeconds})`,
+          'SSH_INVALID_TIMEOUT',
+        );
+      }
+      // A model-chosen hour-long timeout is indistinguishable from a hung tool
+      // call, and pi does not unblock a tool when the user presses Esc.
+      if (timeoutSeconds > MAX_TIMEOUT_SECONDS) {
+        return failed(
+          ctx.cwd,
+          started,
+          `timeoutSeconds must be at most ${MAX_TIMEOUT_SECONDS} (got ${timeoutSeconds})`,
           'SSH_INVALID_TIMEOUT',
         );
       }

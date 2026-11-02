@@ -2,7 +2,7 @@ import { runLocalCommand, type RunResult } from 'pi-helper-core';
 import { homedir } from 'node:os';
 import { shQuote } from './quote.ts';
 import { wrapContainer, type ContainerContext } from './command.ts';
-import { buildSshArgs } from './transport.ts';
+import { buildSshArgs, ensureControlMaster } from './transport.ts';
 import type { RemoteProfile } from './profile.ts';
 
 /**
@@ -44,6 +44,13 @@ export async function runRemoteShell(
     steps.push(...prelude, input.command);
     remoteCommand = `bash -lc ${shQuote(steps.join(' && '))}`;
   }
+
+  // The master must exist before the command runs, otherwise this call creates
+  // it and the daemonized master inherits this call's stdio pipes.
+  await ensureControlMaster(profile, controlDir, {
+    timeoutMs: input.timeoutMs,
+    signal: input.signal,
+  });
 
   return runLocalCommand('ssh', buildSshArgs(profile, remoteCommand, controlDir), {
     cwd: homedir(),

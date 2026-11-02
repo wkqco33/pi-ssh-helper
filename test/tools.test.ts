@@ -132,3 +132,41 @@ test('a host that is not configured is reported as a config problem, not as a co
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('a timeout beyond the cap is refused before ssh is spawned', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'pi-ssh-tools-'));
+  const originalConfig = process.env.PI_SSH_HELPER_CONFIG;
+  try {
+    const configPath = join(dir, 'ssh-helper.json');
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        hosts: { robot: { hostname: '127.0.0.1', remoteWorkspace: '/home/robot/ws' } },
+      }),
+    );
+    process.env.PI_SSH_HELPER_CONFIG = configPath;
+
+    const { tools } = loadExtension();
+    const exec = tools.find((tool) => tool.name === 'ssh_exec');
+    assert.ok(exec);
+
+    const originalPath = process.env.PATH;
+    process.env.PATH = dir;
+    try {
+      const output = await callTool(
+        exec,
+        { host: 'robot', command: 'true', timeoutSeconds: 601 },
+        dir,
+      );
+      const details = output.details as { ok: boolean; errors: { code: string }[] };
+      assert.equal(details.ok, false);
+      assert.equal(details.errors[0].code, 'SSH_INVALID_TIMEOUT');
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  } finally {
+    if (originalConfig === undefined) delete process.env.PI_SSH_HELPER_CONFIG;
+    else process.env.PI_SSH_HELPER_CONFIG = originalConfig;
+    await rm(dir, { recursive: true, force: true });
+  }
+});

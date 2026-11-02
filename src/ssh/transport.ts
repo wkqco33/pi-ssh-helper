@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -52,11 +53,8 @@ export function remoteRootOf(profile: RemoteProfile): string {
   return profile.containerWorkdir ?? profile.remoteWorkspace;
 }
 
-export function buildSshArgs(
-  profile: RemoteProfile,
-  command: string,
-  controlDir: string,
-): string[] {
+/** Connection options shared by every ssh invocation, master included. */
+function connectionArgs(profile: RemoteProfile, controlDir: string): string[] {
   const args = [
     // Never prompt: a password or host-key question would hang a tool call
     // instead of failing with a message the model can act on.
@@ -78,8 +76,141 @@ export function buildSshArgs(
   if (profile.port !== undefined) args.push('-p', String(profile.port));
   if (profile.identityFile !== undefined) args.push('-i', profile.identityFile);
   if (profile.proxyJump !== undefined) args.push('-J', profile.proxyJump);
-  args.push(sshDestination(profile), command);
   return args;
+}
+
+export function buildSshArgs(
+  profile: RemoteProfile,
+  command: string,
+  controlDir: string,
+): string[] {
+  return [...connectionArgs(profile, controlDir), sshDestination(profile), command];
+}
+
+/**
+ * The ssh invocation that owns the multiplexed connection.
+ *
+ * `-N` opens no session and `-f` backgrounds the process after authentication,
+ * so the foreground ssh exits as soon as the master is usable. `ControlMaster`
+ * stays `auto`: when a master already exists this is just another mux client and
+ * returns immediately, which avoids the "ControlSocket already exists" path that
+ * would otherwise leave a stray direct connection behind.
+ */
+export function buildMasterArgs(profile: RemoteProfile, controlDir: string): string[] {
+  return [...connectionArgs(profile, controlDir), '-N', '-f', sshDestination(profile)];
+}
+
+/** Longest a master warm-up may take before the real command runs anyway. */
+const MASTER_BOOTSTRAP_TIMEOUT_MS = 15_000;
+
+/**
+ * Master connections that were already warmed up, per destination and directory.
+ *
+ * Shared at module scope because probes, `ssh_exec`, and the transport are
+ * separate call sites that all create the master through the same socket.
+ */
+const warmMasters = new Map<string, Promise<void>>();
+
+function masterKey(profile: RemoteProfile, controlDir: string): string {
+  return [
+    controlDir,
+    profile.hostname,
+    profile.user ?? '',
+    String(profile.port ?? 22),
+    profile.identityFile ?? '',
+    profile.proxyJump ?? '',
+  ].join('\u0000');
+}
+
+/**
+ * Starts the persistent master with this process's stdio *ignored*.
+ *
+ * This is the whole point of separating the warm-up from the commands: the
+ * daemonized master inherits the stdin/stdout/stderr of the ssh process that
+ * created it. When a tool call created the master, the master kept a copy of the
+ * tool's stderr until the remote command finished — so a completed ssh call
+ * still looked hung, and a remote command that never finished held the tool call
+ * open forever. With `stdio: 'ignore'` the master only ever holds `/dev/null`.
+ *
+ * The caller's identity is not needed for this to succeed; it is best effort.
+ * A failure falls back to the normal `ControlMaster=auto` invocation, which
+ * `pi-helper-core`'s hard deadline still bounds.
+ */
+function bootstrapMaster(
+  profile: RemoteProfile,
+  controlDir: string,
+  options: { timeoutMs?: number; signal?: AbortSignal },
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn('ssh', buildMasterArgs(profile, controlDir), {
+        cwd: homedir(),
+        // Anything piped here becomes the master's inheritance.
+        stdio: 'ignore',
+      });
+    } catch {
+      resolve(false);
+      return;
+    }
+
+    const budget = Math.max(
+      1,
+      Math.min(options.timeoutMs ?? MASTER_BOOTSTRAP_TIMEOUT_MS, MASTER_BOOTSTRAP_TIMEOUT_MS),
+    );
+    let settled = false;
+    const finish = (ok: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      options.signal?.removeEventListener('abort', onAbort);
+      resolve(ok);
+    };
+    const cancel = (): void => {
+      try {
+        child.kill('SIGTERM');
+      } catch {
+        /* already gone */
+      }
+      finish(false);
+    };
+    const timer = setTimeout(cancel, budget);
+    const onAbort = (): void => cancel();
+
+    if (options.signal?.aborted === true) {
+      cancel();
+      return;
+    }
+    options.signal?.addEventListener('abort', onAbort, { once: true });
+    child.once('error', () => finish(false));
+    child.once('exit', (code) => finish(code === 0));
+  });
+}
+
+/**
+ * Makes sure a master exists whose stdio is not a caller's pipe.
+ *
+ * The result is cached per process, because a successful warm-up means the
+ * master is reachable and re-authenticating on every command would double the
+ * failure latency of an unreachable host. A master that expires or dies later
+ * is not re-created here; that call creates it with its own pipes, which is
+ * exactly the case `pi-helper-core`'s hard deadline bounds.
+ */
+export async function ensureControlMaster(
+  profile: RemoteProfile,
+  controlDir: string,
+  options: { timeoutMs?: number; signal?: AbortSignal } = {},
+): Promise<void> {
+  const key = masterKey(profile, controlDir);
+  let job = warmMasters.get(key);
+  if (job === undefined) {
+    job = bootstrapMaster(profile, controlDir, options).then((ok) => {
+      // A failed warm-up must not poison later calls: retry on the next one.
+      if (!ok) warmMasters.delete(key);
+    });
+    warmMasters.set(key, job);
+  }
+  await job;
 }
 
 /**
@@ -128,6 +259,10 @@ export function createSshTransport(options: SshTransportOptions): CommandTranspo
             args: spec.args,
           });
       await ensureControlDir();
+      await ensureControlMaster(profile, controlDir, {
+        timeoutMs: spec.timeoutMs,
+        signal: spec.signal,
+      });
       return runLocalCommand('ssh', buildSshArgs(profile, command, controlDir), {
         // The ssh client itself needs a local directory; it has nothing to do
         // with the remote cwd the command runs in.
@@ -171,14 +306,23 @@ export function remoteProbeCommand(profile: RemoteProfile, script: string): stri
 /** Cheap reachability + capability probe, safe to call before deciding anything. */
 export async function probeHost(
   profile: RemoteProfile,
-  options: { controlDir?: string; timeoutMs?: number } = {},
+  options: { controlDir?: string; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<ProbeOutcome> {
   const controlDir = options.controlDir ?? defaultControlDirPath();
   await mkdir(controlDir, { recursive: true, mode: 0o700 });
+  await ensureControlMaster(profile, controlDir, {
+    timeoutMs: options.timeoutMs,
+    signal: options.signal,
+  });
   const result = await runLocalCommand(
     'ssh',
     buildSshArgs(profile, remoteProbeCommand(profile, buildProbeScript()), controlDir),
-    { cwd: homedir(), timeoutMs: options.timeoutMs ?? 20_000, maxBytes: 64 * 1024 },
+    {
+      cwd: homedir(),
+      timeoutMs: options.timeoutMs ?? 20_000,
+      maxBytes: 64 * 1024,
+      signal: options.signal,
+    },
   );
   return { result, capabilities: parseCapabilities(result.stdout) };
 }
@@ -186,14 +330,23 @@ export async function probeHost(
 /** Probe plus versions and installed ROS distributions. */
 export async function inspectHost(
   profile: RemoteProfile,
-  options: { controlDir?: string; timeoutMs?: number } = {},
+  options: { controlDir?: string; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<InspectionOutcome> {
   const controlDir = options.controlDir ?? defaultControlDirPath();
   await mkdir(controlDir, { recursive: true, mode: 0o700 });
+  await ensureControlMaster(profile, controlDir, {
+    timeoutMs: options.timeoutMs,
+    signal: options.signal,
+  });
   const result = await runLocalCommand(
     'ssh',
     buildSshArgs(profile, remoteProbeCommand(profile, buildInspectionScript()), controlDir),
-    { cwd: homedir(), timeoutMs: options.timeoutMs ?? 30_000, maxBytes: 128 * 1024 },
+    {
+      cwd: homedir(),
+      timeoutMs: options.timeoutMs ?? 30_000,
+      maxBytes: 128 * 1024,
+      signal: options.signal,
+    },
   );
   return {
     result,

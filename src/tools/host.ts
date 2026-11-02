@@ -41,7 +41,7 @@ export function registerHostTools(pi: ExtensionAPI): void {
     promptSnippet: 'Check SSH reachability and remote tool availability',
     parameters: Type.Object({ host: HOST_PARAM }),
     annotations: { readOnlyHint: true, openWorldHint: true },
-    async execute(_id, params, _signal, _update, ctx) {
+    async execute(_id, params, signal, _update, ctx) {
       const started = Date.now();
       let profile: RemoteProfile;
       try {
@@ -52,6 +52,7 @@ export function registerHostTools(pi: ExtensionAPI): void {
 
       const { result: run, capabilities } = await probeHost(profile, {
         controlDir: defaultControlDirPath(),
+        signal,
       });
       const gaps = describeGaps(capabilities);
       const data = {
@@ -120,7 +121,7 @@ export function registerHostTools(pi: ExtensionAPI): void {
     promptSnippet: 'Inspect a remote host toolchain before running remote builds',
     parameters: Type.Object({ host: HOST_PARAM }),
     annotations: { readOnlyHint: true, openWorldHint: true },
-    async execute(_id, params, _signal, _update, ctx) {
+    async execute(_id, params, signal, _update, ctx) {
       const started = Date.now();
       let profile: RemoteProfile;
       try {
@@ -131,6 +132,7 @@ export function registerHostTools(pi: ExtensionAPI): void {
 
       const { result: run, report } = await inspectHost(profile, {
         controlDir: defaultControlDirPath(),
+        signal,
       });
       if (run.code !== 0) {
         return unreachable(

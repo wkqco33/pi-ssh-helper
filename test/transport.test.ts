@@ -1,12 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { toLocalPath, toRemotePath } from '../src/ssh/map.ts';
 import { buildProfile } from '../src/ssh/profile.ts';
-import { buildSshArgs, createSshTransport, remoteProbeCommand } from '../src/ssh/transport.ts';
+import {
+  buildMasterArgs,
+  buildSshArgs,
+  createSshTransport,
+  ensureControlMaster,
+  probeHost,
+  remoteProbeCommand,
+} from '../src/ssh/transport.ts';
 
 const PROFILE = buildProfile(
   'robot-01',
@@ -201,6 +209,92 @@ test('a container exec sends docker exec with the mapped cwd to ssh', async () =
     assert.match(remoteCommand, /source \/opt\/ros\/jazzy\/setup\.bash/);
     assert.match(remoteCommand, /ros2/);
     assert.doesNotMatch(remoteCommand, /\/home\/me\/ws/);
+  } finally {
+    process.env.PATH = originalPath;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('the master warm-up opens no session and backgrounds itself', () => {
+  const args = buildMasterArgs(PROFILE, '/tmp/ctl');
+  assert.ok(args.includes('ControlMaster=auto'));
+  assert.ok(args.includes('ControlPersist=600'));
+  assert.ok(args.includes('-N'));
+  assert.ok(args.includes('-f'));
+  // The destination must be last: everything after it is a remote command.
+  assert.equal(args.at(-1), 'robot@10.0.0.5');
+  assert.equal(args.includes('echo hi'), false);
+});
+
+test(
+  'the master is warmed up with ignored stdio so it cannot hold a caller pipe',
+  { skip: existsSync('/proc/self/fd/1') ? false : 'needs /proc to observe the inherited fd' },
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pi-ssh-master-'));
+    const originalPath = process.env.PATH;
+    const originalMarker = process.env.PI_TEST_STDIO_MARKER;
+    try {
+      const marker = join(dir, 'stdio.txt');
+      process.env.PI_TEST_STDIO_MARKER = marker;
+      // Records what stdout the daemonized master would inherit.
+      const fake = join(dir, 'ssh');
+      await writeFile(
+        fake,
+        // fd 3 carries the report, and the command substitution keeps fd 1 at
+        // what the master itself was given: redirecting the reporting command
+        // would otherwise show the marker file instead of the inherited stdio.
+        '#!/bin/sh\nexec 3> "$PI_TEST_STDIO_MARKER"\nprintf \'%s\\n\' "$(readlink /proc/$$/fd/1)" >&3\nexit 0\n',
+      );
+      await chmod(fake, 0o755);
+      process.env.PATH = `${dir}:${originalPath ?? ''}`;
+
+      await ensureControlMaster(PROFILE, join(dir, 'ctl'));
+
+      const inherited = (await readFile(marker, 'utf8')).trim();
+      assert.equal(inherited, '/dev/null');
+    } finally {
+      process.env.PATH = originalPath;
+      if (originalMarker === undefined) delete process.env.PI_TEST_STDIO_MARKER;
+      else process.env.PI_TEST_STDIO_MARKER = originalMarker;
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test('the probe forwards an abort signal instead of waiting out its timeout', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'pi-ssh-abort-'));
+  const originalPath = process.env.PATH;
+  try {
+    const fake = join(dir, 'ssh');
+    // Master warm-up returns; the probe itself ignores SIGTERM, so only the
+    // abort path (SIGTERM → SIGKILL → report) can end it.
+    await writeFile(
+      fake,
+      '#!/bin/sh\ncase " $* " in *" -N -f "*) exit 0;; esac\ntrap \'\' TERM\nsleep 30\n',
+    );
+    await chmod(fake, 0o755);
+    process.env.PATH = `${dir}:${originalPath ?? ''}`;
+
+    const controller = new AbortController();
+    const started = Date.now();
+    const promise = probeHost(PROFILE, {
+      controlDir: join(dir, 'ctl'),
+      timeoutMs: 60_000,
+      signal: controller.signal,
+    });
+    setTimeout(() => controller.abort(), 200);
+    let watchdog: NodeJS.Timeout | undefined;
+    const outcome = await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        watchdog = setTimeout(() => reject(new Error('probe did not settle')), 8_000);
+      }),
+    ]).finally(() => {
+      if (watchdog) clearTimeout(watchdog);
+    });
+
+    assert.equal(outcome.result.cancelled, true);
+    assert.ok(Date.now() - started < 8_000);
   } finally {
     process.env.PATH = originalPath;
     await rm(dir, { recursive: true, force: true });
