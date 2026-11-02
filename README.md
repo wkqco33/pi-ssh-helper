@@ -9,7 +9,7 @@ SSH 너머의 장비(로봇, 워크스테이션, 임베디드 보드)에서 pi�
 
 ## 왜 별도 패키지인가
 
-`pi-helper-core` 0.1.3의 **transport seam**을 사용합니다. 코어의 모든 명령은 `runCommand()` 한 곳을 지나고, 여기에 transport를 등록하면 호출부 30여 곳을 고치지 않고도 전체가 원격을 보게 됩니다. 이 확장은 그 transport의 SSH 구현체입니다.
+`pi-helper-core` 0.1.5의 **transport seam**을 사용합니다. 코어의 모든 명령은 `runCommand()` 한 곳을 지나고, 여기에 transport를 등록하면 호출부 30여 곳을 고치지 않고도 전체가 원격을 보게 됩니다. 이 확장은 그 transport의 SSH 구현체입니다.
 
 ```
 pi-ssh-helper  ──setTransport()──►  pi-helper-core
@@ -136,7 +136,7 @@ pi install ./pi-ssh-helper          # 이 저장소를 클론한 디렉터리에
 | pi | `pi-package` 확장 API (`pi.extensions`) |
 | 원격 OS | POSIX 셸 + `bash`가 있는 Linux/macOS. Windows 원격은 미지원 |
 | 인증 | SSH 키 / ssh-agent (`BatchMode=yes`) |
-| 의존성 | `pi-helper-core@^0.1.3` (transport seam). hard deadline과 SIGKILL 승격은 **0.1.5+** 필요 |
+| 의존성 | `pi-helper-core@^0.1.5` (transport seam, hard deadline 포함) |
 | 컨테이너 | Docker(`docker exec`)가 있는 원격 호스트, 선택 사항 |
 
 **0.y.z 단계입니다.** 공개 도구 이름(`ssh_*`, `/ssh-remote`)은 유지하되, 설정 키·출력 `data` 필드·오류 코드는 마이너 릴리스에서 바뀔 수 있습니다. 버전 규칙은 [SemVer](https://semver.org/)를 따르고 변경 내역은 [`CHANGELOG.md`](CHANGELOG.md)에 남깁니다.

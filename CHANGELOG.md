@@ -6,6 +6,18 @@ All notable changes are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-02
+
+### Added
+
+- `src/ssh/transport.ts`: `ensureControlMaster()` / `buildMasterArgs()` warm the `ControlPersist` master with `ssh -N -f` and **ignored stdio** before every ssh invocation (probe, `ssh_exec`, and every routed helper command). The daemonized master inherits the stdio of the ssh process that created it; when a tool call created it, the master kept a copy of that call's stderr, so a *completed* command still looked hung and a remote command that never finished held the tool call open indefinitely. With `stdio: 'ignore'` the master only ever owns `/dev/null`.
+
+### Fixed
+
+- `ssh_host_status` and `ssh_detect_capabilities` now pass the tool's abort signal through `probeHost()` / `inspectHost()`. They previously discarded it (`_signal`), so Esc did nothing at all and the tool stayed "running" until its 20 s / 30 s internal timeout.
+- `ssh_exec`: `timeoutSeconds` is capped at 600. A model-chosen hour-long timeout is indistinguishable from a hung tool call, and pi does not unblock a tool when the user presses Esc.
+- Requires `pi-helper-core` 0.1.5 or newer for the hard deadline: the runner escalates SIGTERM to SIGKILL and reports the collected output even when a descendant still holds an stdio pipe instead of waiting for a `close` event that may never arrive.
+
 ## [0.2.0] - 2026-10-22
 
 ### Added
