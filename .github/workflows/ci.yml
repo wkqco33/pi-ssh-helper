@@ -4,6 +4,17 @@ on:
   push:
     branches: [main, master]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      python_ref:
+        description: Python helper branch or commit
+        type: string
+      ros_ref:
+        description: ROS helper branch or commit
+        type: string
+      rust_ref:
+        description: Rust helper branch or commit
+        type: string
 
 permissions:
   contents: read
@@ -58,3 +69,42 @@ jobs:
         run: |
           npx tsx --test test/tools.test.ts
           npx tsx --test test/integration.test.ts
+
+  cross-extension:
+    name: Python, ROS, and Rust routing
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: pi-ssh-helper
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: wkqco33/pi-python-helper
+          ref: ${{ inputs.python_ref }}
+          path: pi-python-helper
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: wkqco33/pi-ros-helper
+          ref: ${{ inputs.ros_ref }}
+          path: pi-ros-helper
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: wkqco33/pi-rust-helper
+          ref: ${{ inputs.rust_ref }}
+          path: pi-rust-helper
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install locked dependencies
+        run: |
+          for helper in pi-ssh-helper pi-python-helper pi-ros-helper pi-rust-helper; do
+            npm ci --prefix "$helper"
+          done
+      - name: Verify routing through fake SSH
+        working-directory: pi-ssh-helper
+        run: npm run test:cross-extension

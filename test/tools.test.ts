@@ -58,7 +58,7 @@ test('the extension registers its three tools, its command, and the shutdown hoo
   ]);
   assert.deepEqual(
     commands.map((command) => command.name),
-    ['ssh-remote'],
+    ['ssh-remote', 'helper-doctor'],
   );
   assert.ok(events.includes('session_shutdown'));
   assert.deepEqual(

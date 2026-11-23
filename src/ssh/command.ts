@@ -74,8 +74,10 @@ export function wrapContainer(
   script: string,
   cwd: string | undefined,
   container: ContainerContext,
+  keepStdin = false,
 ): string {
   const args = ['docker', 'exec'];
+  if (keepStdin) args.push('-i');
   if (cwd !== undefined && cwd !== '') {
     if (!cwd.startsWith('/')) throw new Error(`container cwd must be an absolute path: ${cwd}`);
     args.push('-w', shQuote(cwd));

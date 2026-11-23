@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import { registerDoctorCommand } from '../src/commands/doctor.ts';
 import { registerRemoteCommand } from '../src/commands/remote.ts';
 import { registerAllTools } from '../src/tools/index.ts';
 
@@ -10,4 +11,5 @@ import { registerAllTools } from '../src/tools/index.ts';
 export default function (pi: ExtensionAPI): void {
   registerAllTools(pi);
   registerRemoteCommand(pi);
+  registerDoctorCommand(pi);
 }

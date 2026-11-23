@@ -22,12 +22,12 @@ const PROFILE = buildProfile(
   [],
 );
 
-test('the ssh invocation pins non-interactive, multiplexed settings', () => {
+test('the ssh command can reuse a master without starting one on its output pipes', () => {
   const args = buildSshArgs(PROFILE, 'echo hi', '/tmp/ctl');
   assert.deepEqual(args.slice(0, 2), ['-o', 'BatchMode=yes']);
-  assert.ok(args.includes('ControlMaster=auto'));
+  assert.ok(args.includes('ControlMaster=no'));
   assert.ok(args.includes('ControlPath=/tmp/ctl/%C'));
-  assert.ok(args.includes('ControlPersist=600'));
+  assert.ok(args.includes('ControlPersist=no'));
   assert.ok(args.includes('ConnectTimeout=10'));
   assert.equal(args.at(-2), 'robot@10.0.0.5');
   assert.equal(args.at(-1), 'echo hi');
@@ -215,6 +215,54 @@ test('a container exec sends docker exec with the mapped cwd to ssh', async () =
   }
 });
 
+test('JSON travels from the helper through ssh into a container command stdin', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'pi-ssh-container-stdin-'));
+  const originalPath = process.env.PATH;
+  try {
+    await writeFile(
+      join(dir, 'ssh'),
+      '#!/bin/sh\ncase " $* " in *" -N -f "*) exit 0;; esac\nfor cmd; do :; done\nexec sh -c "$cmd"\n',
+      { mode: 0o755 },
+    );
+    await writeFile(
+      join(dir, 'docker'),
+      [
+        '#!/bin/sh',
+        'shift',
+        'interactive=false',
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    -i) interactive=true; shift;;',
+        '    -w) shift 2;;',
+        '    *) shift; break;;',
+        '  esac',
+        'done',
+        'if "$interactive"; then exec "$@"; else exec "$@" </dev/null; fi',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    process.env.PATH = `${dir}:${originalPath ?? ''}`;
+    const transport = createSshTransport({
+      profile: { ...CONTAINER_PROFILE, prelude: [] },
+      localRoot: '/home/me/ws',
+      controlDir: join(dir, 'ctl'),
+    });
+    const stdin = '{"query":"topic"}';
+    const result = await transport.exec({
+      executable: '/bin/cat',
+      args: [],
+      cwd: '/ws',
+      timeoutMs: 5_000,
+      stdin,
+    });
+    assert.equal(result.code, 0);
+    assert.equal(result.stdout, stdin);
+  } finally {
+    process.env.PATH = originalPath;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('the master warm-up opens no session and backgrounds itself', () => {
   const args = buildMasterArgs(PROFILE, '/tmp/ctl');
   assert.ok(args.includes('ControlMaster=auto'));
@@ -295,6 +343,105 @@ test('the probe forwards an abort signal instead of waiting out its timeout', as
 
     assert.equal(outcome.result.cancelled, true);
     assert.ok(Date.now() - started < 8_000);
+  } finally {
+    process.env.PATH = originalPath;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a probe whose master preparation uses the entire budget does not launch a command', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'pi-ssh-deadline-'));
+  const originalPath = process.env.PATH;
+  try {
+    await writeFile(
+      join(dir, 'ssh'),
+      '#!/bin/sh\ncase " $* " in *" -N -f "*) exec sleep 2;; esac\ntouch "${0%/*}/command-started"\n',
+      { mode: 0o755 },
+    );
+    process.env.PATH = `${dir}:${originalPath ?? ''}`;
+    const { result } = await probeHost(PROFILE, {
+      controlDir: join(dir, 'ctl'),
+      timeoutMs: 150,
+    });
+    assert.equal(result.timedOut, true);
+    assert.equal(result.cancelled, false);
+    assert.equal(existsSync(join(dir, 'command-started')), false);
+  } finally {
+    process.env.PATH = originalPath;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('cancelling the first caller does not cancel shared master preparation for another caller', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'pi-ssh-shared-master-'));
+  const originalPath = process.env.PATH;
+  try {
+    await writeFile(
+      join(dir, 'ssh'),
+      [
+        '#!/bin/sh',
+        'case " $* " in',
+        '  *" -N -f "*) sleep 0.3; touch "${0%/*}/master-ready"; exit 0;;',
+        'esac',
+        'test -f "${0%/*}/master-ready" && printf "os=Linux\\n"',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    process.env.PATH = `${dir}:${originalPath ?? ''}`;
+    const controlDir = join(dir, 'ctl');
+    const controller = new AbortController();
+    const first = probeHost(PROFILE, { controlDir, signal: controller.signal });
+    const second = probeHost(PROFILE, { controlDir });
+    const abort = setTimeout(() => controller.abort(), 100);
+    try {
+      assert.equal((await first).result.cancelled, true);
+      assert.equal((await second).capabilities.os, 'Linux');
+    } finally {
+      clearTimeout(abort);
+      await Promise.allSettled([first, second]);
+    }
+  } finally {
+    process.env.PATH = originalPath;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('master preparation refreshes expired connections and retries after a transport failure', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'pi-ssh-master-refresh-'));
+  const originalPath = process.env.PATH;
+  try {
+    await writeFile(
+      join(dir, 'ssh'),
+      [
+        '#!/bin/sh',
+        'case " $* " in',
+        '  *" -N -f "*) printf "master\\n" >> "${0%/*}/warmups"; exit 0;;',
+        'esac',
+        'if [ -f "${0%/*}/closed" ]; then exit 255; fi',
+        'printf "os=Linux\\n"',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    process.env.PATH = `${dir}:${originalPath ?? ''}`;
+    const controlDir = join(dir, 'ctl');
+    const warmups = async () => (await readFile(join(dir, 'warmups'), 'utf8')).trim().split('\n');
+    let now = 100;
+    t.mock.method(performance, 'now', () => now);
+
+    await probeHost(PROFILE, { controlDir });
+    await probeHost(PROFILE, { controlDir });
+    assert.equal((await warmups()).length, 1);
+
+    now += 600_001;
+    await probeHost(PROFILE, { controlDir });
+    assert.equal((await warmups()).length, 2);
+
+    const closed = join(dir, 'closed');
+    await writeFile(closed, '');
+    assert.equal((await probeHost(PROFILE, { controlDir })).result.code, 255);
+    await rm(closed);
+    assert.equal((await probeHost(PROFILE, { controlDir })).capabilities.os, 'Linux');
+    assert.equal((await warmups()).length, 3);
   } finally {
     process.env.PATH = originalPath;
     await rm(dir, { recursive: true, force: true });

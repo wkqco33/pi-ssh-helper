@@ -74,9 +74,14 @@ pi install ./pi-ssh-helper          # 이 저장소를 클론한 디렉터리에
 /ssh-remote status             # 현재 대상
 /ssh-remote hosts              # 설정된 alias 목록
 /ssh-remote off                # 로컬로 복귀
+/helper-doctor                 # 설치 버전, 실행 대상, 도구체인 확인
 ```
 
 활성화는 **사용자 명령으로만** 됩니다. 모델이 스스로 모든 헬퍼 도구를 다른 장비로 돌리면 잘못 조준한 것을 알아챌 방법이 없기 때문입니다.
+
+`/helper-doctor`는 로드된 Pi·헬퍼·코어 버전, 현재 실행 대상과 작업 디렉터리 매핑을 표시합니다. 도구체인 확인은 현재 대상에서 PATH만 조회합니다. 매핑이 맞지 않으면 조회를 건너뜁니다.
+
+Python·ROS·Rust 저장소를 형제 디렉터리에 체크아웃하고 각 저장소의 의존성을 설치하세요. SSH 헬퍼에서 `pnpm run test:cross-extension`을 실행하면 같은 프로세스에 로드한 세 헬퍼가 가짜 SSH로 명령을 보내는지 확인할 수 있습니다. GitHub Actions에서 수동으로 실행할 때는 각 헬퍼의 브랜치나 커밋을 지정할 수 있습니다.
 
 | 도구 | 위험도 | 설명 |
 |---|---|---|
@@ -91,12 +96,12 @@ pi install ./pi-ssh-helper          # 이 저장소를 클론한 디렉터리에
 - **원격 변경은 2단계 opt-in** — 호스트 설정의 `allowMutating: true` **그리고** 호출의 `allowMutating: true`가 모두 있어야 실행됩니다.
 - **환경은 전달하지 않습니다** — 호출별 overlay만 원격으로 보냅니다. 로컬 `PATH`를 보내면 같은 이름의 로컬 바이너리가 원격 툴체인을 가립니다.
 - **출력 상한** — stdout/stderr는 100KB에서 잘리고, 모델에게는 16KB까지만 전달합니다.
-- **타임아웃은 로컬, 그리고 hard deadline** — 로컬 타이머가 ssh 프로세스 그룹에 SIGTERM을 보내고, 유예(기본 500ms) 뒤 SIGKILL까지 보냅니다. `pi-helper-core` 0.1.5부터는 남은 프로세스가 stdio를 쥐고 있어도 결과를 반환합니다. 원격에 GNU `timeout`이 없어도 동작하고, 원격 프로세스가 남을 수 있는 것은 여전히 알려진 한계입니다.
-- **멈춘 도구 호출 방지** — `ControlPersist` 마스터는 `setsid()`로 프로세스 그룹을 벗어나므로 SIGTERM이 닿지 않습니다. 이 확장은 모든 ssh 호출 전에 `ssh -N -f`로 마스터를 **stdio를 버린 채** 미리 띄웁니다(`ensureControlMaster`). 그러지 않으면 도구 호출이 만든 마스터가 그 호출의 stderr 사본을 쥐고, 명령이 끝났는데도 `close`가 오지 않아 도구가 멈춘 것처럼 보입니다. `ssh_host_status`·`ssh_detect_capabilities`·`ssh_exec`는 모두 도구의 abort signal을 전달하므로 Esc로 취소됩니다.
+- **호출 전체에 제한 시간 적용** — SSH 연결 준비와 명령 실행이 같은 제한 시간을 사용합니다. 제한에 도달하면 로컬 SSH 프로세스 그룹에 SIGTERM을 보내고, 기본 500ms의 종료 유예 후 필요하면 SIGKILL을 보냅니다. 로컬 호출 종료 후에도 원격 프로세스가 남을 수 있습니다.
+- **SSH 마스터 연결 재사용** — `ssh -N -f`로 마스터를 시작할 때 표준 입출력을 닫아 명령의 출력 파이프가 열린 채로 남는 일을 막습니다. 기존 마스터를 사용할 수 없으면 명령은 직접 연결하며, 동시 요청은 준비 중인 마스터를 공유하면서 각자 취소할 수 있습니다. `ssh_host_status`·`ssh_detect_capabilities`·`ssh_exec`는 Esc로 취소됩니다.
 
 ## 컨테이너 안에서 실행 (로봇 등)
 
-도구체인이 호스트가 아니라 컨테이너에서 도는 장비(예: CLOi 로봇)는 `container`와 `containerWorkdir`를 지정합니다. 그러면 헬퍼 명령과 probe가 `docker exec`로 컨테이너 안에서 실행됩니다.
+도구체인이 호스트가 아니라 컨테이너에서 도는 장비(예: CLOi 로봇)는 `container`와 `containerWorkdir`를 지정합니다. 그러면 헬퍼 명령과 probe가 `docker exec`로 컨테이너 안에서 실행됩니다. 헬퍼 명령에 표준 입력이 있으면 Docker에도 전달합니다.
 
 ```json
 {

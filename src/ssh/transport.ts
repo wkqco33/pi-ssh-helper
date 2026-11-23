@@ -6,6 +6,7 @@ import {
   runLocalCommand,
   type CommandSpec,
   type CommandTransport,
+  type RunOptions,
   type RunResult,
 } from 'pi-helper-core';
 import {
@@ -35,6 +36,7 @@ export interface SshTransportOptions {
 
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const CONTROL_PERSIST_SECONDS = 600;
+const MAX_TIMER_MS = 2_147_483_647;
 
 /** The container a profile runs in, or `undefined` when it runs on the host. */
 export function containerOf(profile: RemoteProfile): ContainerContext | undefined {
@@ -54,7 +56,11 @@ export function remoteRootOf(profile: RemoteProfile): string {
 }
 
 /** Connection options shared by every ssh invocation, master included. */
-function connectionArgs(profile: RemoteProfile, controlDir: string): string[] {
+function connectionArgs(
+  profile: RemoteProfile,
+  controlDir: string,
+  startMaster: boolean,
+): string[] {
   const args = [
     // Never prompt: a password or host-key question would hang a tool call
     // instead of failing with a message the model can act on.
@@ -67,11 +73,11 @@ function connectionArgs(profile: RemoteProfile, controlDir: string): string[] {
     '-o',
     'ServerAliveCountMax=3',
     '-o',
-    'ControlMaster=auto',
+    `ControlMaster=${startMaster ? 'auto' : 'no'}`,
     '-o',
     `ControlPath=${join(controlDir, '%C')}`,
     '-o',
-    `ControlPersist=${CONTROL_PERSIST_SECONDS}`,
+    `ControlPersist=${startMaster ? CONTROL_PERSIST_SECONDS : 'no'}`,
   ];
   if (profile.port !== undefined) args.push('-p', String(profile.port));
   if (profile.identityFile !== undefined) args.push('-i', profile.identityFile);
@@ -84,7 +90,9 @@ export function buildSshArgs(
   command: string,
   controlDir: string,
 ): string[] {
-  return [...connectionArgs(profile, controlDir), sshDestination(profile), command];
+  // ControlMaster=no still reuses an existing socket. Only the warm-up may
+  // create a master, otherwise the daemon would inherit this command's pipes.
+  return [...connectionArgs(profile, controlDir, false), sshDestination(profile), command];
 }
 
 /**
@@ -97,19 +105,20 @@ export function buildSshArgs(
  * would otherwise leave a stray direct connection behind.
  */
 export function buildMasterArgs(profile: RemoteProfile, controlDir: string): string[] {
-  return [...connectionArgs(profile, controlDir), '-N', '-f', sshDestination(profile)];
+  return [...connectionArgs(profile, controlDir, true), '-N', '-f', sshDestination(profile)];
 }
 
 /** Longest a master warm-up may take before the real command runs anyway. */
 const MASTER_BOOTSTRAP_TIMEOUT_MS = 15_000;
 
-/**
- * Master connections that were already warmed up, per destination and directory.
- *
- * Shared at module scope because probes, `ssh_exec`, and the transport are
- * separate call sites that all create the master through the same socket.
- */
-const warmMasters = new Map<string, Promise<void>>();
+interface MasterPreparation {
+  controller: AbortController;
+  job: Promise<boolean>;
+  waiters: number;
+  expiresAt?: number;
+}
+
+const warmMasters = new Map<string, MasterPreparation>();
 
 function masterKey(profile: RemoteProfile, controlDir: string): string {
   return [
@@ -129,88 +138,138 @@ function masterKey(profile: RemoteProfile, controlDir: string): string {
  * daemonized master inherits the stdin/stdout/stderr of the ssh process that
  * created it. When a tool call created the master, the master kept a copy of the
  * tool's stderr until the remote command finished — so a completed ssh call
- * still looked hung, and a remote command that never finished held the tool call
- * open forever. With `stdio: 'ignore'` the master only ever holds `/dev/null`.
- *
- * The caller's identity is not needed for this to succeed; it is best effort.
- * A failure falls back to the normal `ControlMaster=auto` invocation, which
- * `pi-helper-core`'s hard deadline still bounds.
+ * still looked hung. With `stdio: 'ignore'` the master only ever holds `/dev/null`.
  */
 function bootstrapMaster(
   profile: RemoteProfile,
   controlDir: string,
-  options: { timeoutMs?: number; signal?: AbortSignal },
+  signal: AbortSignal,
 ): Promise<boolean> {
   return new Promise((resolve) => {
-    let child: ReturnType<typeof spawn>;
     try {
-      child = spawn('ssh', buildMasterArgs(profile, controlDir), {
+      const child = spawn('ssh', buildMasterArgs(profile, controlDir), {
         cwd: homedir(),
-        // Anything piped here becomes the master's inheritance.
         stdio: 'ignore',
+        signal,
+        killSignal: 'SIGKILL',
       });
+      child.once('error', () => resolve(false));
+      child.once('exit', (code) => resolve(code === 0));
     } catch {
       resolve(false);
-      return;
     }
-
-    const budget = Math.max(
-      1,
-      Math.min(options.timeoutMs ?? MASTER_BOOTSTRAP_TIMEOUT_MS, MASTER_BOOTSTRAP_TIMEOUT_MS),
-    );
-    let settled = false;
-    const finish = (ok: boolean): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      options.signal?.removeEventListener('abort', onAbort);
-      resolve(ok);
-    };
-    const cancel = (): void => {
-      try {
-        child.kill('SIGTERM');
-      } catch {
-        /* already gone */
-      }
-      finish(false);
-    };
-    const timer = setTimeout(cancel, budget);
-    const onAbort = (): void => cancel();
-
-    if (options.signal?.aborted === true) {
-      cancel();
-      return;
-    }
-    options.signal?.addEventListener('abort', onAbort, { once: true });
-    child.once('error', () => finish(false));
-    child.once('exit', (code) => finish(code === 0));
   });
 }
 
-/**
- * Makes sure a master exists whose stdio is not a caller's pipe.
- *
- * The result is cached per process, because a successful warm-up means the
- * master is reachable and re-authenticating on every command would double the
- * failure latency of an unreachable host. A master that expires or dies later
- * is not re-created here; that call creates it with its own pipes, which is
- * exactly the case `pi-helper-core`'s hard deadline bounds.
- */
+/** Stop waiting on local preparation without dropping its rejection handler. */
+function waitForPreparation(job: Promise<unknown>, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const stop = (): void => resolve();
+    if (signal.aborted) stop();
+    else signal.addEventListener('abort', stop, { once: true });
+    job.then(
+      () => {
+        signal.removeEventListener('abort', stop);
+        resolve();
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', stop);
+        reject(error);
+      },
+    );
+  });
+}
+
+/** Share one warm-up while keeping each caller's cancellation independent. */
 export async function ensureControlMaster(
   profile: RemoteProfile,
   controlDir: string,
-  options: { timeoutMs?: number; signal?: AbortSignal } = {},
+  signal?: AbortSignal,
 ): Promise<void> {
+  if (signal?.aborted) return;
   const key = masterKey(profile, controlDir);
-  let job = warmMasters.get(key);
-  if (job === undefined) {
-    job = bootstrapMaster(profile, controlDir, options).then((ok) => {
-      // A failed warm-up must not poison later calls: retry on the next one.
-      if (!ok) warmMasters.delete(key);
-    });
-    warmMasters.set(key, job);
+  const now = performance.now();
+  for (const [candidate, master] of warmMasters) {
+    if (master.expiresAt !== undefined && master.expiresAt <= now) warmMasters.delete(candidate);
   }
-  await job;
+
+  let master = warmMasters.get(key);
+  if (master?.expiresAt !== undefined) return;
+  if (!master) {
+    const controller = new AbortController();
+    const timeout = AbortSignal.timeout(MASTER_BOOTSTRAP_TIMEOUT_MS);
+    const job = bootstrapMaster(profile, controlDir, AbortSignal.any([controller.signal, timeout]));
+    const preparation: MasterPreparation = { controller, job, waiters: 0 };
+    warmMasters.set(key, preparation);
+    void job.then((ready) => {
+      if (warmMasters.get(key) !== preparation) return;
+      if (ready) preparation.expiresAt = performance.now() + CONTROL_PERSIST_SECONDS * 1_000;
+      else warmMasters.delete(key);
+    });
+    master = preparation;
+  }
+
+  master.waiters += 1;
+  try {
+    if (signal) await waitForPreparation(master.job, signal);
+    else await master.job;
+  } finally {
+    master.waiters -= 1;
+    if (master.waiters === 0 && master.expiresAt === undefined && warmMasters.get(key) === master) {
+      warmMasters.delete(key);
+      master.controller.abort();
+    }
+  }
+}
+
+/** Spend one monotonic time budget on preparation and the SSH command. */
+export async function runSshCommand(
+  profile: RemoteProfile,
+  controlDir: string,
+  command: string,
+  options: Omit<RunOptions, 'cwd' | 'env'>,
+): Promise<RunResult> {
+  const startedAt = performance.now();
+  const timeoutMs = options.timeoutMs
+    ? Math.max(0, Math.min(Math.ceil(options.timeoutMs), MAX_TIMER_MS))
+    : undefined;
+  const deadline = timeoutMs === undefined ? Infinity : startedAt + timeoutMs;
+  const timeout = timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs);
+  const prepSignal =
+    options.signal && timeout
+      ? AbortSignal.any([options.signal, timeout])
+      : (options.signal ?? timeout);
+  const elapsed = (): number => Math.round(performance.now() - startedAt);
+
+  if (!prepSignal?.aborted && timeoutMs !== 0) {
+    const directory = mkdir(controlDir, { recursive: true, mode: 0o700 });
+    if (prepSignal) await waitForPreparation(directory, prepSignal);
+    else await directory;
+    await ensureControlMaster(profile, controlDir, prepSignal);
+  }
+  const remaining = deadline - performance.now();
+  if (prepSignal?.aborted || remaining <= 0) {
+    const cancelled = options.signal?.aborted === true;
+    return {
+      code: null,
+      stdout: '',
+      stderr: '',
+      timedOut: !cancelled,
+      cancelled,
+      truncated: false,
+      durationMs: elapsed(),
+    };
+  }
+
+  const key = masterKey(profile, controlDir);
+  const master = warmMasters.get(key);
+  const result = await runLocalCommand('ssh', buildSshArgs(profile, command, controlDir), {
+    ...options,
+    cwd: homedir(),
+    timeoutMs: Number.isFinite(remaining) ? Math.ceil(remaining) : undefined,
+  });
+  if (result.code === 255 && warmMasters.get(key) === master) warmMasters.delete(key);
+  return { ...result, durationMs: elapsed() };
 }
 
 /**
@@ -226,12 +285,6 @@ export async function ensureControlMaster(
 export function createSshTransport(options: SshTransportOptions): CommandTransport {
   const { profile, localRoot } = options;
   const controlDir = options.controlDir ?? defaultControlDirPath();
-  let prepared: Promise<void> | undefined;
-
-  const ensureControlDir = (): Promise<void> => {
-    prepared ??= mkdir(controlDir, { recursive: true, mode: 0o700 }).then(() => undefined);
-    return prepared;
-  };
 
   return {
     id: `ssh:${profile.alias}`,
@@ -250,6 +303,7 @@ export function createSshTransport(options: SshTransportOptions): CommandTranspo
             }),
             spec.cwd,
             container,
+            spec.stdin !== undefined,
           )
         : buildRemoteCommand({
             cwd: spec.cwd,
@@ -258,19 +312,12 @@ export function createSshTransport(options: SshTransportOptions): CommandTranspo
             executable: spec.executable,
             args: spec.args,
           });
-      await ensureControlDir();
-      await ensureControlMaster(profile, controlDir, {
-        timeoutMs: spec.timeoutMs,
-        signal: spec.signal,
-      });
-      return runLocalCommand('ssh', buildSshArgs(profile, command, controlDir), {
-        // The ssh client itself needs a local directory; it has nothing to do
-        // with the remote cwd the command runs in.
-        cwd: homedir(),
+      return runSshCommand(profile, controlDir, command, {
         stdin: spec.stdin,
-        timeoutMs: spec.timeoutMs,
+        timeoutMs: spec.timeoutMs ?? 120_000,
         maxBytes: spec.maxBytes,
         signal: spec.signal,
+        terminationGraceMs: spec.terminationGraceMs,
       });
     },
   };
@@ -309,16 +356,11 @@ export async function probeHost(
   options: { controlDir?: string; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<ProbeOutcome> {
   const controlDir = options.controlDir ?? defaultControlDirPath();
-  await mkdir(controlDir, { recursive: true, mode: 0o700 });
-  await ensureControlMaster(profile, controlDir, {
-    timeoutMs: options.timeoutMs,
-    signal: options.signal,
-  });
-  const result = await runLocalCommand(
-    'ssh',
-    buildSshArgs(profile, remoteProbeCommand(profile, buildProbeScript()), controlDir),
+  const result = await runSshCommand(
+    profile,
+    controlDir,
+    remoteProbeCommand(profile, buildProbeScript()),
     {
-      cwd: homedir(),
       timeoutMs: options.timeoutMs ?? 20_000,
       maxBytes: 64 * 1024,
       signal: options.signal,
@@ -333,16 +375,11 @@ export async function inspectHost(
   options: { controlDir?: string; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<InspectionOutcome> {
   const controlDir = options.controlDir ?? defaultControlDirPath();
-  await mkdir(controlDir, { recursive: true, mode: 0o700 });
-  await ensureControlMaster(profile, controlDir, {
-    timeoutMs: options.timeoutMs,
-    signal: options.signal,
-  });
-  const result = await runLocalCommand(
-    'ssh',
-    buildSshArgs(profile, remoteProbeCommand(profile, buildInspectionScript()), controlDir),
+  const result = await runSshCommand(
+    profile,
+    controlDir,
+    remoteProbeCommand(profile, buildInspectionScript()),
     {
-      cwd: homedir(),
       timeoutMs: options.timeoutMs ?? 30_000,
       maxBytes: 128 * 1024,
       signal: options.signal,
