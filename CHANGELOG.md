@@ -6,6 +6,8 @@ All notable changes are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-23
+
 ### Changed
 
 - `allowMutating` 기본값을 `true`로 바꿨습니다. 새로 등록한 호스트는 설정을 고치지 않아도 `allowMutating: true` 호출 인자만 주면 원격 변경 명령이 실행됩니다. 기존처럼 읽기 전용으로 두려면 호스트 프로필에 `"allowMutating": false`를 지정합니다.
