@@ -48,7 +48,7 @@ pi install ./pi-ssh-helper          # 이 저장소를 클론한 디렉터리에
       "remoteWorkspace": "/home/robot/ws",
       "localWorkspace": "/home/me/ws",
       "prelude": ["source /opt/ros/humble/setup.bash"],
-      "allowMutating": false
+      "allowMutating": true
     }
   }
 }
@@ -60,7 +60,7 @@ pi install ./pi-ssh-helper          # 이 저장소를 클론한 디렉터리에
 | `remoteWorkspace` | 같은 프로젝트의 원격 경로. **필수** — 추측하지 않습니다 |
 | `localWorkspace` | `remoteWorkspace`에 대응하는 로컬 경로. 생략하면 `/ssh-remote on` 시점의 pi cwd |
 | `prelude` | 매 명령 전에 실행할 셸 라인. ROS `setup.bash`가 여기 들어갑니다 |
-| `allowMutating` | `mutating`/`irreversible` 명령 허용 여부. 기본 `false` |
+| `allowMutating` | `mutating`/`irreversible` 명령 허용 여부. 기본 `true` — 해당 호스트만 읽기 전용으로 두려면 `false` |
 | `connectTimeoutSeconds` | ssh 연결 타임아웃. 기본 10 |
 
 설정 파일의 **오타는 거부**됩니다. `remoteWorksapce`처럼 무시되면 나중에 "엉뚱한 디렉터리에서 빌드했다"로 나타나기 때문입니다. `PI_SSH_HELPER_CONFIG`로 경로를 바꿀 수 있습니다.
@@ -93,7 +93,7 @@ Python·ROS·Rust 저장소를 형제 디렉터리에 체크아웃하고 각 저
 
 - **경로 매핑은 fail-closed**입니다. 로컬 cwd가 매핑 루트 밖이면 명령을 실행하지 않고 실패합니다. 엉뚱한 트리에서 빌드/테스트가 도는 것보다 낫습니다.
 - **`BatchMode=yes`** — 비밀번호·호스트키 질문은 도구 호출을 매달리게 하므로 즉시 실패시킵니다. 키 인증이 전제입니다.
-- **원격 변경은 2단계 opt-in** — 호스트 설정의 `allowMutating: true` **그리고** 호출의 `allowMutating: true`가 모두 있어야 실행됩니다.
+- **원격 변경은 2단계 검사** — 호출에 `allowMutating: true`가 있어야 하고, 호스트가 `allowMutating: false`로 옵트아웃하지 않아야 실행됩니다(기본값 `true`).
 - **환경은 전달하지 않습니다** — 호출별 overlay만 원격으로 보냅니다. 로컬 `PATH`를 보내면 같은 이름의 로컬 바이너리가 원격 툴체인을 가립니다.
 - **출력 상한** — stdout/stderr는 100KB에서 잘리고, 모델에게는 16KB까지만 전달합니다.
 - **호출 전체에 제한 시간 적용** — SSH 연결 준비와 명령 실행이 같은 제한 시간을 사용합니다. 제한에 도달하면 로컬 SSH 프로세스 그룹에 SIGTERM을 보내고, 기본 500ms의 종료 유예 후 필요하면 SIGKILL을 보냅니다. 로컬 호출 종료 후에도 원격 프로세스가 남을 수 있습니다.

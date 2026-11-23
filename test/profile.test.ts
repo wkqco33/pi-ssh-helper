@@ -61,7 +61,7 @@ test('an alias with no ssh_config entry still resolves to itself', () => {
   const profile = buildProfile('gpu-box', { remoteWorkspace: '/srv/ws' }, []);
   assert.equal(profile.hostname, 'gpu-box');
   assert.equal(profile.user, undefined);
-  assert.equal(profile.allowMutating, false);
+  assert.equal(profile.allowMutating, true);
   assert.equal(profile.prelude.length, 0);
   assert.equal(sshDestination(profile), 'gpu-box');
 });
@@ -173,4 +173,9 @@ test('container values are validated before they reach docker', () => {
       ),
     /containerWorkdir must be an absolute path/,
   );
+});
+
+test('an explicit allowMutating: false keeps the host read-only', () => {
+  const profile = buildProfile('gpu-box', { remoteWorkspace: '/srv/ws', allowMutating: false }, []);
+  assert.equal(profile.allowMutating, false);
 });

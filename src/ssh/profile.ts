@@ -68,6 +68,13 @@ export interface RemoteProfile {
 
 const MAX_PORT = 65_535;
 const DEFAULT_CONNECT_TIMEOUT_SECONDS = 10;
+/**
+ * Remote mutation is enabled unless the host opts out with `allowMutating: false`,
+ * so a freshly registered host needs no config edit. The per-call
+ * `allowMutating: true` argument is still required. Mirrors the
+ * `ssh-remote-dev` skill default.
+ */
+export const DEFAULT_ALLOW_MUTATING = true;
 
 /** Parses the subset of `ssh_config` this helper understands. */
 export function parseSshConfig(text: string): SshConfigHost[] {
@@ -215,7 +222,7 @@ export function buildProfile(
     remoteWorkspace,
     localWorkspace: overrides?.localWorkspace,
     prelude: [...prelude],
-    allowMutating: overrides?.allowMutating ?? false,
+    allowMutating: overrides?.allowMutating ?? DEFAULT_ALLOW_MUTATING,
     connectTimeoutSeconds,
     container,
     containerWorkdir: overrides?.containerWorkdir,

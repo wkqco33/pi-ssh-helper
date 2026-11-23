@@ -20,7 +20,7 @@ src/hosts.ts          설정 로드·프로필 해석
 1. **seam은 한 곳**: 원격 라우팅은 `src/ssh/transport.ts`의 `CommandTransport` 구현으로만 한다. `src/tools/`나 `src/commands/`에서 별도 ssh 실행 경로를 만들지 않는다.
 2. **인용**: 원격 셸 문자열에 값을 넣을 때는 `shQuote`/`shJoin`만 사용한다. 예외는 `ssh_exec`의 `command`(사용자가 준 셸 한 줄) 하나뿐이다.
 3. **경로 매핑 fail-closed**: 매핑 불가 cwd는 실행하지 않고 실패한다. fallback 디렉터리로 대체하지 않는다.
-4. **원격 변경 2단계 옵트인**: 호스트 `allowMutating` + 호출 `allowMutating`. 기본값 `false`를 바꾸지 않는다. 위험도는 `classifyCommand`로 판정한다.
+4. **원격 변경 2단계 검사**: 호출 인자 `allowMutating: true`가 필수이고, 호스트는 `allowMutating: false`로 옵트아웃할 수 있다. 기본값은 `true`이며 사용자 요청 없이 뒤집지 않는다. 위험도는 `classifyCommand`로 판정한다.
 5. **활성화는 사용자만**: 모델이 스스로 transport를 설치할 수 있게 만들지 않는다(`/ssh-remote on`만).
 6. **환경 미전달**: 로컬 `process.env`를 통째로 보내지 않는다. 호출별 overlay만 보낸다.
 7. **컨테이너 모드는 `docker exec -w`로**: 컨테이너 프로필에서는 `cd`를 스크립트에 넣지 않고 `-w`로 작업 디렉터리를 지정한다(도커가 직접 검증). prelude와 probe도 컨테이너 안에서 실행되어야 하며, 호스트 기준으로 측정하면 "ros2 없음"이라는 거짓 진단이 나온다.

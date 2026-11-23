@@ -16,7 +16,7 @@ export function registerExecTool(pi: ExtensionAPI): void {
     name: 'ssh_exec',
     label: 'SSH Exec',
     description:
-      'Run one shell command on a remote host over SSH and return its bounded output. Read-only commands run directly; mutating or irreversible commands require "allowMutating": true for the host in ~/.pi/agent/ssh-helper.json and allowMutating: true in the call.',
+      'Run one shell command on a remote host over SSH and return its bounded output. Read-only commands run directly; mutating or irreversible commands need allowMutating: true in the call (the host profile allows them unless it sets "allowMutating": false in ~/.pi/agent/ssh-helper.json).',
     promptSnippet: 'Run a shell command on a remote host over SSH',
     parameters: Type.Object({
       command: Type.String({ description: 'Shell command line to run on the remote host' }),
@@ -34,7 +34,7 @@ export function registerExecTool(pi: ExtensionAPI): void {
       allowMutating: Type.Optional(
         Type.Boolean({
           description:
-            'Acknowledge that this command changes remote state. Still requires allowMutating for the host in config.',
+            'Acknowledge that this command changes remote state. The host profile must not opt out with "allowMutating": false.',
         }),
       ),
       container: Type.Optional(
@@ -60,7 +60,7 @@ export function registerExecTool(pi: ExtensionAPI): void {
         return failed(
           ctx.cwd,
           started,
-          `refusing to run a ${classification.risk} command on ${profile.alias}: remote mutation is not enabled for this host`,
+          `refusing to run a ${classification.risk} command on ${profile.alias}: pass allowMutating: true, or the host opted out with "allowMutating": false`,
           'SSH_MUTATION_NOT_ALLOWED',
           {
             data: {
@@ -70,7 +70,7 @@ export function registerExecTool(pi: ExtensionAPI): void {
             },
             suggestions: [
               {
-                message: `Set "allowMutating": true for host "${profile.alias}" in ~/.pi/agent/ssh-helper.json, then pass allowMutating: true.`,
+                message: `Pass allowMutating: true (or remove "allowMutating": false for host "${profile.alias}" in ~/.pi/agent/ssh-helper.json).`,
                 confidence: 'high',
               },
               {
